@@ -4,6 +4,7 @@ import { usePose } from '../hooks/usePose';
 import { useRepCounter } from '../hooks/useRepCounter';
 import { useVoiceAssistant } from '../hooks/useVoiceAssistant';
 import { getPlan, EXERCISE_LIBRARY } from '../utils/workoutPlan';
+import ExerciseDemo from '../components/ExerciseDemo';
 import api from '../api/axios';
 import Navbar from '../components/Navbar';
 
@@ -25,6 +26,7 @@ export default function WorkoutPage() {
     const { exercises: planExercises, isDefault, missingFields } = getPlan(user);
 
     const [selectedExId, setSelectedExId] = useState(null); // exercise library id
+    const [showDemo, setShowDemo] = useState(false); // demo screen visible?
     const [isActive, setIsActive] = useState(false);
     const [cameraError, setCameraError] = useState('');
     const [sessionStartTime, setSessionStartTime] = useState(null);
@@ -32,6 +34,12 @@ export default function WorkoutPage() {
     const [submitting, setSubmitting] = useState(false);
     const [sessionDone, setSessionDone] = useState(false);
     const [sessionResult, setSessionResult] = useState(null);
+
+    // Set logic state
+    const [currentSet, setCurrentSet] = useState(1);
+    const [restSeconds, setRestSeconds] = useState(0);
+    const [totalSessionReps, setTotalSessionReps] = useState(0);
+    const [shouldEndSession, setShouldEndSession] = useState(false);
 
     // Person lock
     const [personLocked, setPersonLocked] = useState(false);
@@ -46,10 +54,62 @@ export default function WorkoutPage() {
     const { reps, accuracy, feedback, phase, processLandmarks, reset } = useRepCounter(trackAsType);
     const { speak } = useVoiceAssistant();
 
-    useEffect(() => { if (reps > 0) speak(reps.toString(), true); }, [reps, speak]);
+    const tReps = selectedEx?.targetReps || 10;
+    const tSets = selectedEx?.targetSets || 3;
+
+    // ── Reps target logic & Voice ──────────────────────────────────────
     useEffect(() => {
-        if (feedback?.includes('⚠')) speak(feedback.replace('⚠', ''), false);
-    }, [feedback, speak]);
+        if (!isActive || restSeconds > 0 || reps === 0) return;
+
+        if (reps < tReps) {
+            // Normal rep announcement
+            speak(reps.toString(), true);
+        } else if (reps >= tReps) {
+            // Set complete!
+            const isLast = currentSet >= tSets;
+            setTotalSessionReps(prev => prev + tReps);
+            reset(); // Immediately reset for next phase
+
+            if (isLast) {
+                speak("Workout completed. Great job!", true);
+                setShouldEndSession(true);
+            } else {
+                const rSec = selectedEx?.restSeconds || 30;
+                speak(`Set ${currentSet} completed. Rest for ${rSec} seconds.`, true);
+                setRestSeconds(rSec);
+            }
+        }
+    }, [reps, isActive, restSeconds, currentSet, selectedEx, speak, tReps, tSets, reset]);
+
+    // ── Rest Timer Countdown ─────────────────────────────────────────
+    useEffect(() => {
+        let iv;
+        if (isActive && restSeconds > 0) {
+            iv = setInterval(() => {
+                setRestSeconds(prev => {
+                    if (prev === 1) {
+                        setCurrentSet(c => c + 1);
+                        speak(`Start Set ${currentSet + 1}.`, true);
+                        return 0;
+                    }
+                    return prev - 1;
+                });
+            }, 1000);
+        }
+        return () => clearInterval(iv);
+    }, [isActive, restSeconds, currentSet, speak]);
+
+    useEffect(() => {
+        if (shouldEndSession) {
+            setShouldEndSession(false);
+            handleEndSession();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [shouldEndSession]);
+
+    useEffect(() => {
+        if (feedback?.includes('⚠') && restSeconds === 0) speak(feedback.replace('⚠', ''), false);
+    }, [feedback, restSeconds, speak]);
 
     useEffect(() => {
         let iv;
@@ -62,9 +122,10 @@ export default function WorkoutPage() {
     const handlePoseResults = useCallback(
         (results, isLost) => {
             setIsPersonLost(!!isLost);
+            if (restSeconds > 0) return; // Do not process poses during rest sequence
             if (results?.poseLandmarks && !isLost) processLandmarks(results.poseLandmarks);
         },
-        [processLandmarks]
+        [processLandmarks, restSeconds]
     );
     const handleLockData = useCallback((desc) => { lastDescRef.current = desc; }, []);
 
@@ -74,6 +135,10 @@ export default function WorkoutPage() {
     const startCamera = async () => {
         if (!selectedExId) return alert('⚠️ Please select a workout before starting!');
         setCameraError('');
+        setCurrentSet(1);
+        setRestSeconds(0);
+        setTotalSessionReps(0);
+        reset();
         try {
             const stream = await navigator.mediaDevices.getUserMedia({
                 video: { width: 640, height: 480, facingMode: 'user' }, audio: false,
@@ -125,19 +190,34 @@ export default function WorkoutPage() {
         setSubmitting(true);
         speak('Session complete. Great work today!', true);
         const exerciseType = trackAsType;
+        const finalReps = totalSessionReps + reps;
         try {
-            const payload = { exerciseType, repsCompleted: reps, accuracyScore: accuracy, duration: elapsedTime, feedbackSummary: generateSummary(accuracy, reps) };
+            const payload = { exerciseType, repsCompleted: finalReps, accuracyScore: accuracy, duration: elapsedTime, feedbackSummary: generateSummary(accuracy, finalReps) };
             const { data } = await api.post('/session/complete', payload);
             setSessionResult({ ...payload, improvement: data.data.improvementPercentage, streak: data.data.currentStreak });
             setSessionDone(true);
         } catch {
             setSessionDone(true);
-            setSessionResult({ exerciseType, repsCompleted: reps, accuracyScore: accuracy, duration: elapsedTime, improvement: 0, streak: 0 });
+            setSessionResult({ exerciseType, repsCompleted: finalReps, accuracyScore: accuracy, duration: elapsedTime, improvement: 0, streak: 0 });
         } finally { setSubmitting(false); }
     };
 
     const formatTime = s => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
     const getPhaseColor = () => phase === 'DOWN' ? '#ff4d6d' : phase === 'UP' ? '#00f5ff' : '#94a3b8';
+
+    // ── Demo Screen ──────────────────────────────────────────────
+    if (showDemo && selectedEx) {
+        return (
+            <div className="page-shell">
+                <Navbar />
+                <ExerciseDemo
+                    exercise={selectedEx}
+                    onStartWorkout={() => { setShowDemo(false); startCamera(); }}
+                    onChangeExercise={() => { setShowDemo(false); setSelectedExId(null); }}
+                />
+            </div>
+        );
+    }
 
     // ── Session Complete ─────────────────────────────────────────
     if (sessionDone && sessionResult) {
@@ -186,8 +266,8 @@ export default function WorkoutPage() {
                         <button
                             key={ex.id}
                             className={`plan-pill ${selectedExId === ex.id ? 'plan-active' : ''} ${isActive ? 'plan-disabled' : ''}`}
-                            onClick={() => !isActive && setSelectedExId(ex.id)}
-                            title={ex.trackLabel}
+                            onClick={() => { if (!isActive) { setSelectedExId(ex.id); setShowDemo(true); } }}
+                            title={`${ex.trackLabel} — click to preview`}
                         >
                             {ex.icon} {ex.label}
                             {selectedExId === ex.id && <span className="plan-sel-dot">●</span>}
@@ -224,8 +304,8 @@ export default function WorkoutPage() {
                             {planExercises.map(ex => (
                                 <button key={ex.id}
                                     className={`selector-btn ${selectedExId === ex.id ? 'active' : ''}`}
-                                    onClick={() => setSelectedExId(ex.id)}
-                                    title={ex.trackLabel}
+                                    onClick={() => { setSelectedExId(ex.id); setShowDemo(true); }}
+                                    title={`${ex.trackLabel} — click to preview form`}
                                     style={{ position: 'relative' }}
                                 >
                                     {ex.icon} {ex.label}
@@ -248,8 +328,8 @@ export default function WorkoutPage() {
                                             return (
                                                 <button key={id}
                                                     className={`selector-btn ${selectedExId === id ? 'active' : ''}`}
-                                                    onClick={() => setSelectedExId(id)}
-                                                    title={ex.trackLabel}
+                                                    onClick={() => { setSelectedExId(id); setShowDemo(true); }}
+                                                    title={`${ex.trackLabel} — click to preview form`}
                                                     style={{ opacity: 0.7 }}
                                                 >
                                                     {ex.icon} {ex.label}
@@ -312,10 +392,17 @@ export default function WorkoutPage() {
                             </div>
                         )}
 
-                        <div className="panel-card reps-card">
-                            <div className="big-number">{reps}</div>
-                            <div className="panel-label">REPS</div>
-                        </div>
+                        {restSeconds > 0 ? (
+                            <div className="panel-card timer-card" style={{ borderColor: '#f59e0b' }}>
+                                <div className="big-number" style={{ color: '#f59e0b' }}>{restSeconds}s</div>
+                                <div className="panel-label">REST TIMER</div>
+                            </div>
+                        ) : (
+                            <div className="panel-card reps-card">
+                                <div className="big-number">{reps} <span style={{ fontSize: '18px', color: '#888' }}>/ {tReps}</span></div>
+                                <div className="panel-label">REPS (SET {currentSet} OF {tSets})</div>
+                            </div>
+                        )}
 
                         <div className="panel-card accuracy-card">
                             <div className="big-number" style={{ color: accuracy >= 80 ? '#22c55e' : accuracy >= 60 ? '#f59e0b' : '#ef4444' }}>
