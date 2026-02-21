@@ -8,28 +8,17 @@ import {
 import { Line } from 'react-chartjs-2';
 import api from '../api/axios';
 import Navbar from '../components/Navbar';
+import { getPlan } from '../utils/workoutPlan';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
 
-const ALL_EXERCISES = {
-    squat: { label: 'Squats', icon: '🦵', sets: '3 × 15 reps', tip: 'Knee angle tracking' },
-    pushup: { label: 'Push-ups', icon: '💪', sets: '3 × 12 reps', tip: 'Elbow & alignment tracking' },
-    lunge: { label: 'Lunges', icon: '🏃', sets: '3 × 10 reps each side', tip: 'Front knee angle tracking' },
+const GOAL_LABELS = {
+    weight_loss: 'Fat Loss', muscle_gain: 'Muscle Gain',
+    endurance: 'Endurance', general_fitness: 'General Fitness',
+    maintenance: 'Maintenance', flexibility: 'Flexibility',
 };
+const LEVEL_LABELS = { beginner: 'Beginner', intermediate: 'Intermediate', advanced: 'Advanced' };
 
-// Today's plan rotates daily so it feels fresh
-const getTodaysPlan = () => {
-    const plans = [
-        ['squat', 'pushup'],
-        ['lunge', 'squat'],
-        ['pushup', 'lunge'],
-        ['squat', 'pushup', 'lunge'],
-        ['lunge', 'pushup'],
-        ['squat', 'lunge'],
-        ['pushup', 'squat'],
-    ];
-    return plans[new Date().getDay()];
-};
 
 export default function DashboardPage() {
     const navigate = useNavigate();
@@ -160,9 +149,9 @@ export default function DashboardPage() {
                     </div>
                 </div>
 
-                {/* TODAY'S WORKOUT PLAN */}
+                {/* TODAY'S ADAPTIVE WORKOUT PLAN */}
                 {(() => {
-                    const todaysPlan = getTodaysPlan();
+                    const { exercises, isDefault, missingFields } = getPlan(user);
                     return (
                         <div className="today-plan-card">
                             <div className="plan-header">
@@ -170,31 +159,57 @@ export default function DashboardPage() {
                                 <h3>Today's Workout Plan</h3>
                                 <span className="plan-day">{new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short' })}</span>
                             </div>
+
+                            {/* Profile-level + goal chip */}
+                            {!isDefault && (
+                                <div className="plan-meta">
+                                    <span className="meta-chip level">{LEVEL_LABELS[user.fitnessLevel] || user.fitnessLevel}</span>
+                                    <span className="meta-sep">×</span>
+                                    <span className="meta-chip goal">{GOAL_LABELS[user.goal] || user.goal}</span>
+                                    <span className="meta-note">Personalised plan</span>
+                                </div>
+                            )}
+
+                            {/* Missing profile prompt */}
+                            {isDefault && missingFields.length > 0 && (
+                                <div className="plan-incomplete">
+                                    ⚠️ Complete your profile to get a personalised plan.
+                                    <button onClick={() => navigate('/profile')} className="plan-complete-btn">Set {missingFields.join(' & ')} →</button>
+                                </div>
+                            )}
+
                             <div className="plan-exercises">
-                                {todaysPlan.map((id, idx) => {
-                                    const ex = ALL_EXERCISES[id];
-                                    return (
-                                        <div key={id} className="plan-ex-row">
-                                            <span className="plan-ex-num">{idx + 1}</span>
-                                            <span className="plan-ex-icon">{ex.icon}</span>
-                                            <div className="plan-ex-info">
-                                                <strong>{ex.label}</strong>
-                                                <span>{ex.sets}</span>
-                                            </div>
-                                            <span className="plan-ex-tip">{ex.tip}</span>
-                                            <button className="plan-start-btn" onClick={() => navigate('/workout')}>
-                                                Start →
-                                            </button>
+                                {exercises.map((ex, idx) => (
+                                    <div key={ex.id} className="plan-ex-row">
+                                        <span className="plan-ex-num">{idx + 1}</span>
+                                        <span className="plan-ex-icon">{ex.icon}</span>
+                                        <div className="plan-ex-info">
+                                            <strong>{ex.label}</strong>
+                                            <span>{ex.sets}</span>
                                         </div>
-                                    );
-                                })}
+                                        <span className={`plan-ex-tip ${ex.trackAs ? '' : 'tip-freeform'}`}>
+                                            {ex.trackLabel}
+                                        </span>
+                                        <button className="plan-start-btn" onClick={() => navigate('/workout')}>
+                                            Start →
+                                        </button>
+                                    </div>
+                                ))}
                             </div>
                             <style>{`
                                 .today-plan-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(0,245,255,0.12); border-radius: 20px; padding: 24px; margin-bottom: 24px; }
-                                .plan-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+                                .plan-header { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
                                 .plan-icon { font-size: 20px; }
                                 .plan-header h3 { flex: 1; font-size: 16px; color: white; }
                                 .plan-day { font-size: 12px; color: #888; }
+                                .plan-meta { display:flex; align-items:center; gap:8px; margin-bottom:18px; flex-wrap:wrap; }
+                                .meta-chip { padding:3px 10px; border-radius:20px; font-size:11px; font-weight:700; }
+                                .meta-chip.level { background:rgba(124,58,237,0.2); color:#a78bfa; border:1px solid rgba(124,58,237,0.3); }
+                                .meta-chip.goal  { background:rgba(0,245,212,0.1); color:#00f5d4; border:1px solid rgba(0,245,212,0.25); }
+                                .meta-sep { color:#555; font-size:12px; }
+                                .meta-note { font-size:11px; color:#555; margin-left:4px; }
+                                .plan-incomplete { font-size:13px; color:#f59e0b; background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.2); border-radius:10px; padding:10px 14px; margin-bottom:16px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+                                .plan-complete-btn { padding:5px 12px; background:rgba(245,158,11,0.15); border:1px solid rgba(245,158,11,0.3); color:#f59e0b; border-radius:8px; cursor:pointer; font-size:12px; font-weight:700; white-space:nowrap; }
                                 .plan-exercises { display: flex; flex-direction: column; gap: 12px; }
                                 .plan-ex-row { display: flex; align-items: center; gap: 14px; padding: 14px 16px; background: rgba(255,255,255,0.02); border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); }
                                 .plan-ex-num { width: 24px; height: 24px; background: linear-gradient(135deg,#00f5ff,#7c3aed); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 900; color: white; flex-shrink: 0; }
@@ -203,6 +218,7 @@ export default function DashboardPage() {
                                 .plan-ex-info strong { font-size: 14px; color: white; }
                                 .plan-ex-info span { font-size: 12px; color: #888; }
                                 .plan-ex-tip { font-size: 11px; color: #00f5ff; background: rgba(0,245,255,0.08); padding: 4px 8px; border-radius: 6px; margin-right: 8px; white-space: nowrap; }
+                                .plan-ex-tip.tip-freeform { color:#f59e0b; background:rgba(245,158,11,0.08); }
                                 .plan-start-btn { padding: 8px 16px; background: rgba(0,245,255,0.1); border: 1px solid rgba(0,245,255,0.25); color: #00f5ff; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 700; white-space: nowrap; }
                                 .plan-start-btn:hover { background: rgba(0,245,255,0.2); }
                             `}</style>
